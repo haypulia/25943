@@ -48,7 +48,12 @@ int main(int argc, char *argv[])
                 if (getrlimit(RLIMIT_FSIZE, &r) == -1)
                     perror("getrlimit");
                 else
-                    printf("ulimit: %ld\n", (long)r.rlim_cur);
+                {
+                    if (r.rlim_cur == RLIM_INFINITY)
+                        printf("ulimit: unlimited\n");
+                    else
+                        printf("ulimit: %ld\n", (long)r.rlim_cur);
+                }
 
                 break;
             }
@@ -77,7 +82,12 @@ int main(int argc, char *argv[])
                 if (getrlimit(RLIMIT_CORE, &r) == -1)
                     perror("getrlimit");
                 else
-                    printf("Core size: %ld\n", (long)r.rlim_cur);
+                {
+                    if (r.rlim_cur == RLIM_INFINITY)
+                        printf("Core size: unlimited\n");
+                    else
+                        printf("Core size: %ld\n", (long)r.rlim_cur);
+                }
 
                 break;
             }
