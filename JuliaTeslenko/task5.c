@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <ctype.h>
-#include <termios.h>
 
 #define MAX_LINES 1000
 #define MAX_LEN 1024
@@ -14,108 +13,10 @@ typedef struct {
     off_t length;
 } Line;
 
-struct termios old_terminal;
-
-void restore_terminal()
-{
-    tcsetattr(STDIN_FILENO, TCSANOW, &old_terminal);
-}
-
 void handle_sigint(int sig)
 {
     (void)sig;
     printf("\nCtrl+C pressed. Program continues.\n");
-}
-
-int read_line_number()
-{
-    char input[100];
-    int pos = 0;
-    char ch;
-
-    while (1)
-    {
-        if (read(STDIN_FILENO, &ch, 1) != 1)
-        {
-            continue;
-        }
-
-        if ((unsigned char)ch == 3)
-        {
-            printf("\nCtrl+C pressed.\n");
-            return -1;
-        }
-
-        if (ch == '\n' || ch == '\r')
-        {
-            printf("\n");
-            break;
-        }
-
-        if (ch == 8 || (unsigned char)ch == 127)
-        {
-            if (pos > 0)
-            {
-                pos--;
-                printf("\b \b");
-                fflush(stdout);
-            }
-
-            continue;
-        }
-
-        if ((unsigned char)ch == 27)
-        {
-            char next;
-
-            if (read(STDIN_FILENO, &next, 1) != 1)
-            {
-                continue;
-            }
-
-            if (next == '[')
-            {
-                if (read(STDIN_FILENO, &next, 1) != 1)
-                {
-                    continue;
-                }
-            }
-
-            continue;
-        }
-
-        if ((unsigned char)ch == 11)
-        {
-            continue;
-        }
-
-        if (isdigit((unsigned char)ch))
-        {
-            if (pos < 99)
-            {
-                input[pos] = ch;
-                pos++;
-
-                printf("%c", ch);
-                fflush(stdout);
-            }
-
-            continue;
-        }
-
-        printf("\a");
-        fflush(stdout);
-    }
-
-    if (pos == 0)
-    {
-        printf("Please enter a number.\n");
-        return -1;
-    }
-
-    input[pos] = '\0';
-
-    return atoi(input);
 }
 
 int main(int argc, char *argv[])
@@ -127,16 +28,15 @@ int main(int argc, char *argv[])
     off_t line_start = 0;
     off_t pos;
 
+    signal(SIGINT, handle_sigint);
+
     if (argc != 2)
     {
         printf("Usage: %s filename\n", argv[0]);
         return 1;
     }
 
-    signal(SIGINT, handle_sigint);
-
     fd = open(argv[1], O_RDONLY);
-
     if (fd == -1)
     {
         perror("open");
@@ -151,15 +51,11 @@ int main(int argc, char *argv[])
 
             lines[cnt].offset = line_start;
             lines[cnt].length = pos - line_start - 1;
-
             cnt++;
-
             line_start = pos;
 
             if (cnt >= MAX_LINES)
-            {
                 break;
-            }
         }
     }
 
@@ -177,52 +73,91 @@ int main(int argc, char *argv[])
 
     for (int i = 0; i < cnt; i++)
     {
-        printf("%d\t%lld\t%lld\n",
-               i + 1,
+        printf("%d\t%lld\t%lld\n", i + 1,
                (long long)lines[i].offset,
                (long long)lines[i].length);
     }
 
-    if (tcgetattr(STDIN_FILENO, &old_terminal) == -1)
-    {
-        perror("tcgetattr");
-        close(fd);
-        return 1;
-    }
-
-    struct termios new_terminal = old_terminal;
-
-    new_terminal.c_lflag &= ~(ICANON | ECHO);
-    new_terminal.c_cc[VMIN] = 1;
-    new_terminal.c_cc[VTIME] = 0;
-
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &new_terminal) == -1)
-    {
-        perror("tcsetattr");
-        close(fd);
-        return 1;
-    }
-
-    atexit(restore_terminal);
-
     while (1)
     {
+        char input[100];
+        int pos_input = 0;
+        int valid = 1;
         int number;
 
         printf("\nEnter line number (0 - exit): ");
         fflush(stdout);
 
-        number = read_line_number();
-
-        if (number == -1)
+        while (pos_input < 99)
         {
+            char ch;
+
+            if (read(STDIN_FILENO, &ch, 1) != 1)
+                break;
+
+            if (ch == '\n')
+                break;
+
+            if ((unsigned char)ch == 0x1B)
+            {
+                char skip;
+                if (read(STDIN_FILENO, &skip, 1) != 1)
+                    break;
+                if (read(STDIN_FILENO, &skip, 1) != 1)
+                    break;
+                continue;
+            }
+
+            if ((unsigned char)ch == 0x7F || (unsigned char)ch == 0x08)
+            {
+                if (pos_input > 0)
+                {
+                    pos_input--;
+                    printf("\b \b");
+                    fflush(stdout);
+                }
+                continue;
+            }
+
+            if ((unsigned char)ch == 3)
+            {
+                printf("\nCtrl+C pressed.\n");
+                valid = 0;
+                continue;
+            }
+
+            if (iscntrl((unsigned char)ch))
+            {
+                valid = 0;
+                continue;
+            }
+
+            if (!isdigit((unsigned char)ch))
+            {
+                valid = 0;
+                continue;
+            }
+
+            input[pos_input] = ch;
+            pos_input++;
+            putchar(ch);
+            fflush(stdout);
+        }
+
+        putchar('\n');
+
+        input[pos_input] = '\0';
+
+        if (!valid || pos_input == 0)
+        {
+            printf("Please enter a number.\n");
             continue;
         }
 
+        number = atoi(input);
+
         if (number == 0)
-        {
             break;
-        }
 
         if (number < 1 || number > cnt)
         {
@@ -244,11 +179,7 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        ssize_t bytes_read;
-
-        bytes_read = read(fd,
-                          buffer,
-                          lines[number - 1].length);
+        ssize_t bytes_read = read(fd, buffer, lines[number - 1].length);
 
         if (bytes_read == -1)
         {
@@ -257,11 +188,9 @@ int main(int argc, char *argv[])
         }
 
         buffer[bytes_read] = '\0';
-
         printf("%s\n", buffer);
     }
 
     close(fd);
-
     return 0;
 }
