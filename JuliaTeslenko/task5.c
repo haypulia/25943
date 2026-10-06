@@ -32,7 +32,6 @@ int read_line_number()
     char input[100];
     int pos = 0;
     char ch;
-    int valid = 1;
 
     while (1)
     {
@@ -43,7 +42,8 @@ int read_line_number()
 
         if ((unsigned char)ch == 3)
         {
-            continue;
+            printf("\nCtrl+C pressed.\n");
+            return -1;
         }
 
         if (ch == '\n' || ch == '\r')
@@ -103,19 +103,11 @@ int read_line_number()
             continue;
         }
 
-        valid = 0;
-
         printf("\a");
         fflush(stdout);
     }
 
     if (pos == 0)
-    {
-        printf("Please enter a number.\n");
-        return -1;
-    }
-
-    if (!valid)
     {
         printf("Please enter a number.\n");
         return -1;
