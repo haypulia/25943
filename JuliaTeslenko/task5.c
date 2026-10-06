@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <ctype.h>
+#include <errno.h>
 
 #define MAX_LINES 1000
 #define MAX_LEN 1024
@@ -13,11 +14,16 @@ typedef struct {
     off_t length;
 } Line;
 
+volatile sig_atomic_t ctrl_c_pressed = 0;
+
+
+/*
+ * Обработчик Ctrl+C
+ */
 void handle_sigint(int sig)
 {
     (void)sig;
-
-    printf("\nCtrl+C pressed. Program continues.\n");
+    ctrl_c_pressed = 1;
 }
 
 
@@ -29,8 +35,8 @@ int main(int argc, char *argv[])
     int cnt = 0;
     off_t line_start = 0;
     off_t pos;
-
     signal(SIGINT, handle_sigint);
+
 
     if (argc != 2)
     {
@@ -46,6 +52,7 @@ int main(int argc, char *argv[])
         perror("open");
         return 1;
     }
+
     while (read(fd, &c, 1) == 1)
     {
         if (c == '\n')
@@ -74,67 +81,96 @@ int main(int argc, char *argv[])
         lines[cnt].length = pos - line_start;
         cnt++;
     }
-
     printf("\nLine table:\n");
     printf("Line\tOffset\tLength\n");
 
     for (int i = 0; i < cnt; i++)
     {
-        printf("%d\t%lld\t%lld\n", i + 1, (long long)lines[i].offset, (long long)lines[i].length);
+        printf("%d\t%lld\t%lld\n",
+               i + 1,
+               (long long)lines[i].offset,
+               (long long)lines[i].length);
     }
     while (1)
     {
         char input[100];
-        int pos_input = 0;
+        ssize_t bytes_read;
         int valid = 1;
         int number;
 
+
         printf("\nEnter line number (0 - exit): ");
         fflush(stdout);
-        while (pos_input < 99)
+
+        bytes_read = read(STDIN_FILENO, input, sizeof(input) - 1);
+
+
+        if (ctrl_c_pressed)
         {
-            char ch;
+            ctrl_c_pressed = 0;
 
-            if (read(STDIN_FILENO, &ch, 1) != 1)
-            {
-                break;
-            }
-
-            if (ch == '\n')
-            {
-                break;
-            }
-            if ((unsigned char)ch == 3)
-            {
-                printf("\nCtrl+C pressed.\n");
-                valid = 0;
-                continue;
-            }
-
-            if (iscntrl((unsigned char)ch))
-            {
-                valid = 0;
-                continue;
-            }
-
-            if (!isdigit((unsigned char)ch))
-            {
-                valid = 0;
-                continue;
-            }
-
-            input[pos_input] = ch;
-            pos_input++;
+            printf("\n");
+            continue;
         }
 
-        input[pos_input] = '\0';
-        if (!valid || pos_input == 0)
+        if (bytes_read < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+
+            perror("read");
+            break;
+        }
+
+
+        if (bytes_read == 0)
+        {
+            break;
+        }
+
+
+        input[bytes_read] = '\0';
+
+        if (input[bytes_read - 1] == '\n')
+        {
+            input[bytes_read - 1] = '\0';
+            bytes_read--;
+        }
+        if (bytes_read == 0)
+        {
+            printf("Please enter a number.\n");
+            continue;
+        }
+
+        for (ssize_t i = 0; i < bytes_read; i++)
+        {
+            unsigned char ch = input[i];
+
+            if (ch == 27)
+            {
+                valid = 0;
+                break;
+            }
+
+
+            if (!isdigit(ch))
+            {
+                valid = 0;
+                break;
+            }
+        }
+
+
+        if (!valid)
         {
             printf("Please enter a number.\n");
             continue;
         }
 
         number = atoi(input);
+
         if (number == 0)
         {
             break;
@@ -145,31 +181,45 @@ int main(int argc, char *argv[])
             printf("No such line.\n");
             continue;
         }
-        if (lseek(fd, lines[number - 1].offset, SEEK_SET) == -1)
+        if (lseek(fd,
+                  lines[number - 1].offset,
+                  SEEK_SET) == -1)
         {
             perror("lseek");
             continue;
         }
 
+
         char buffer[MAX_LEN];
+
+
         if (lines[number - 1].length >= MAX_LEN)
         {
             printf("The string is too long.\n");
             continue;
         }
-        ssize_t bytes_read;
 
-        bytes_read = read(fd, buffer, lines[number - 1].length);
-        if (bytes_read == -1)
+        ssize_t line_bytes;
+
+        line_bytes = read(fd,
+                          buffer,
+                          lines[number - 1].length);
+
+
+        if (line_bytes == -1)
         {
             perror("read");
             continue;
         }
 
-        buffer[bytes_read] = '\0';
+
+        buffer[line_bytes] = '\0';
+
         printf("%s\n", buffer);
     }
 
+
     close(fd);
+
     return 0;
 }
