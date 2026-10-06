@@ -100,6 +100,7 @@ int main(int argc, char *argv[])
         cnt++;
     }
 
+
     printf("\nLine table:\n");
     printf("Line\tOffset\tLength\n");
 
@@ -111,6 +112,9 @@ int main(int argc, char *argv[])
                (long long)lines[i].length);
     }
 
+    int first_request = 1;
+
+
     while (1)
     {
         char input[100];
@@ -121,7 +125,11 @@ int main(int argc, char *argv[])
         printf("\nEnter line number (0 - exit): ");
         fflush(stdout);
 
-        alarm(5);
+        if (first_request)
+        {
+            alarm(5);
+        }
+
 
         while (pos_input < 99)
         {
@@ -160,34 +168,51 @@ int main(int argc, char *argv[])
             pos_input++;
         }
 
-        alarm(0);
+        if (first_request)
+        {
+            alarm(0);
+        }
+
 
         input[pos_input] = '\0';
+
 
         if (!valid || pos_input == 0)
         {
             printf("Please enter a number.\n");
+
+            first_request = 0;
+
             continue;
         }
 
+
         number = atoi(input);
+
 
         if (number == 0)
         {
             break;
         }
 
+
         if (number < 1 || number > cnt)
         {
             printf("No such line.\n");
+
+            first_request = 0;
+
             continue;
         }
+
+        first_request = 0;
 
         if (lseek(fd, lines[number - 1].offset, SEEK_SET) == -1)
         {
             perror("lseek");
             continue;
         }
+
 
         char buffer[MAX_LEN];
 
@@ -197,9 +222,15 @@ int main(int argc, char *argv[])
             continue;
         }
 
+
         ssize_t bytes_read;
 
-        bytes_read = read(fd, buffer, lines[number - 1].length);
+        bytes_read = read(
+            fd,
+            buffer,
+            lines[number - 1].length
+        );
+
 
         if (bytes_read == -1)
         {
@@ -207,11 +238,14 @@ int main(int argc, char *argv[])
             continue;
         }
 
+
         buffer[bytes_read] = '\0';
 
         printf("%s\n", buffer);
     }
 
+
     close(fd);
+
     return 0;
 }
