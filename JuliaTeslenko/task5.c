@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <ctype.h>
+#include <string.h>
 
 #define MAX_LINES 1000
 #define MAX_LEN 1024
@@ -48,12 +49,10 @@ int main(int argc, char *argv[])
         if (c == '\n')
         {
             pos = lseek(fd, 0L, SEEK_CUR);
-
             lines[cnt].offset = line_start;
             lines[cnt].length = pos - line_start - 1;
             cnt++;
             line_start = pos;
-
             if (cnt >= MAX_LINES)
                 break;
         }
@@ -80,35 +79,48 @@ int main(int argc, char *argv[])
 
     while (1)
     {
+        char raw[256];
         char input[100];
         int pos_input = 0;
         int valid = 1;
         int number;
+        ssize_t n;
+        int i;
 
         printf("\nEnter line number (0 - exit): ");
         fflush(stdout);
 
-        while (pos_input < 99)
+        n = read(STDIN_FILENO, raw, sizeof(raw) - 1);
+
+        if (n <= 0)
         {
-            char ch;
+            printf("\nInput error or EOF.\n");
+            break;
+        }
 
-            if (read(STDIN_FILENO, &ch, 1) != 1)
+        raw[n] = '\0';
+
+        for (i = 0; i < n; i++)
+        {
+            unsigned char ch = (unsigned char)raw[i];
+
+            if (ch == '\n' || ch == '\r')
                 break;
 
-            if (ch == '\n')
-                break;
-
-            if ((unsigned char)ch == 0x1B)
+            if (ch == 0x1B)
             {
-                char skip;
-                if (read(STDIN_FILENO, &skip, 1) != 1)
+                while (i + 1 < n && (raw[i + 1] == '[' || raw[i + 1] == 'O'))
+                {
+                    i++;
+                    while (i + 1 < n && ((unsigned char)raw[i + 1] >= 0x20 &&
+                                         (unsigned char)raw[i + 1] <= 0x7E))
+                        i++;
                     break;
-                if (read(STDIN_FILENO, &skip, 1) != 1)
-                    break;
+                }
                 continue;
             }
 
-            if ((unsigned char)ch == 0x7F || (unsigned char)ch == 0x08)
+            if (ch == 0x7F || ch == 0x08 || ch == 0x12)
             {
                 if (pos_input > 0)
                 {
@@ -119,42 +131,44 @@ int main(int argc, char *argv[])
                 continue;
             }
 
-            if ((unsigned char)ch == 3)
+            if (ch == 3)
             {
                 printf("\nCtrl+C pressed.\n");
                 valid = 0;
                 continue;
             }
 
-            if (iscntrl((unsigned char)ch))
+            if (iscntrl(ch))
             {
                 valid = 0;
                 continue;
             }
 
-            if (!isdigit((unsigned char)ch))
+            if (!isdigit(ch))
             {
                 valid = 0;
                 continue;
             }
 
-            input[pos_input] = ch;
-            pos_input++;
-            putchar(ch);
-            fflush(stdout);
+            if (pos_input < 99)
+            {
+                input[pos_input] = (char)ch;
+                pos_input++;
+                putchar(ch);
+                fflush(stdout);
+            }
         }
-
-        putchar('\n');
 
         input[pos_input] = '\0';
 
         if (!valid || pos_input == 0)
         {
-            printf("Please enter a number.\n");
+            printf("\nPlease enter a number.\n");
             continue;
         }
 
         number = atoi(input);
+        printf("\n");
 
         if (number == 0)
             break;
