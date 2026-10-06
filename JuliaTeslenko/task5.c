@@ -74,9 +74,7 @@ int main(int argc, char *argv[])
 
     for (int i = 0; i < cnt; i++)
     {
-        printf("%d\t%lld\t%lld\n", i + 1,
-               (long long)lines[i].offset,
-               (long long)lines[i].length);
+        printf("%d\t%lld\t%lld\n", i + 1, (long long)lines[i].offset, (long long)lines[i].length);
     }
 
     if (tcgetattr(STDIN_FILENO, &oldt) == -1)
@@ -124,9 +122,7 @@ int main(int argc, char *argv[])
                 char skip;
                 while (read(STDIN_FILENO, &skip, 1) == 1)
                 {
-                    if ((skip >= 'A' && skip <= 'Z') ||
-                        (skip >= 'a' && skip <= 'z') ||
-                        skip == '~')
+                    if ((skip >= 'A' && skip <= 'Z') || (skip >= 'a' && skip <= 'z') || skip == '~')
                         break;
                 }
                 continue;
