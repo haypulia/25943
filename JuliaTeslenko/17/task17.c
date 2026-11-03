@@ -108,6 +108,29 @@ int main()
         if (read(STDIN_FILENO, &c, 1) != 1)
             break;
 
+        if (c == 27)
+{
+    char seq[2];
+
+    if (read(STDIN_FILENO, &seq[0], 1) != 1 ||
+        read(STDIN_FILENO, &seq[1], 1) != 1)
+        continue;
+
+    if (seq[0] == '[')
+    {
+        if (seq[1] == 'A') // вверх
+            bell();
+        else if (seq[1] == 'B') // вниз
+            bell();
+        else if (seq[1] == 'C') // вправо
+            bell();
+        else if (seq[1] == 'D') // влево
+            bell();
+    }
+
+    continue;
+}
+
         if (c == old_settings.c_cc[VERASE])
         {
             if (len > 0)
