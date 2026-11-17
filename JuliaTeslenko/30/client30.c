@@ -7,15 +7,15 @@
 #include <termios.h>
 #include <errno.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/types.h>
 
 #define SOCKET_PATH "/tmp/task30_socket"
 
-/* Неблокирующее чтение escape-последовательности (без задержек) */
 static void ignore_escape_sequence(void)
 {
     char ch;
 
-    /* Переводим stdin в неблокирующий режим на время чтения */
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
 
@@ -41,16 +41,15 @@ static int send_all(int fd, const char *buffer, size_t len)
     return 0;
 }
 
-/* Подключение с несколькими попытками — спасает при одновременном запуске */
 static int connect_with_retry(int fd, struct sockaddr_un *addr, socklen_t len)
 {
-    int attempts = 50; /* ~1 секунда суммарно */
+    int attempts = 50;
     while (attempts-- > 0) {
         if (connect(fd, (struct sockaddr *)addr, len) == 0)
             return 0;
         if (errno != ENOENT && errno != ECONNREFUSED)
             return -1;
-        struct timespec ts = {0, 20000000L}; /* 20 мс */
+        struct timespec ts = {0, 20000000L};
         nanosleep(&ts, NULL);
     }
     return -1;
@@ -125,7 +124,7 @@ int main(void)
             continue;
         }
 
-        if (ch == 4) /* Ctrl+D */
+        if (ch == 4)
             break;
 
         buffer[len++] = ch;
