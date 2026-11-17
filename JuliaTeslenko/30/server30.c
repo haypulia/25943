@@ -5,6 +5,7 @@
 #include <sys/un.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
 
 #define SOCKET_PATH "/tmp/task30_socket"
 
@@ -14,36 +15,28 @@ int main(void)
     struct sockaddr_un address;
     char buffer[1024];
     ssize_t bytes;
+    socklen_t addr_len;
 
-    // Создаём сокет
     server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-
-    if (server_fd == -1)
-    {
+    if (server_fd == -1) {
         perror("socket");
         return 1;
     }
 
-    // Указываем адрес сокета
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     strcpy(address.sun_path, SOCKET_PATH);
 
-    // Удаляем старый файл сокета
     unlink(SOCKET_PATH);
 
-    // Привязываем сокет к адресу
-    socklen_t addr_len = strlen(address.sun_path) + sizeof(address.sun_family);
-    if (bind(server_fd, (struct sockaddr *)&address, addr_len) == -1)
-    {
+    addr_len = (socklen_t)(strlen(address.sun_path) + sizeof(address.sun_family));
+    if (bind(server_fd, (struct sockaddr *)&address, addr_len) == -1) {
         perror("bind");
         close(server_fd);
         return 1;
     }
 
-    // Начинаем ожидать подключения клиента
-    if (listen(server_fd, 5) == -1)
-    {
+    if (listen(server_fd, 5) == -1) {
         perror("listen");
         close(server_fd);
         unlink(SOCKET_PATH);
@@ -51,12 +44,13 @@ int main(void)
     }
 
     printf("Server is waiting for a client...\n");
+    fflush(stdout);
 
-    // Принимаем подключение клиента
-    client_fd = accept(server_fd, NULL, NULL);
+    do {
+        client_fd = accept(server_fd, NULL, NULL);
+    } while (client_fd == -1 && errno == EINTR);
 
-    if (client_fd == -1)
-    {
+    if (client_fd == -1) {
         perror("accept");
         close(server_fd);
         unlink(SOCKET_PATH);
@@ -67,29 +61,18 @@ int main(void)
     printf("Uppercase text: ");
     fflush(stdout);
 
-    // Получаем текст от клиента
-    while ((bytes = read(client_fd, buffer, sizeof(buffer))) > 0)
-    {
-        // Переводим символы в верхний регистр
+    while ((bytes = read(client_fd, buffer, sizeof(buffer))) > 0) {
         for (ssize_t i = 0; i < bytes; i++)
-        {
             buffer[i] = (char)toupper((unsigned char)buffer[i]);
-        }
-
-        // Выводим результат
         write(STDOUT_FILENO, buffer, (size_t)bytes);
     }
 
     printf("\nClient disconnected.\n");
 
-    // Закрываем соединение
     close(client_fd);
     close(server_fd);
-
-    // Удаляем файл сокета
     unlink(SOCKET_PATH);
 
     printf("Server finished.\n");
-
     return 0;
 }
