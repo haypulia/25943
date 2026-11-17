@@ -27,9 +27,23 @@ int main(void)
     address.sun_family = AF_UNIX;
     strcpy(address.sun_path, SOCKET_PATH);
 
+    addr_len = (socklen_t)(strlen(address.sun_path) + sizeof(address.sun_family));
+
+    /* Проверяем, не работает ли уже сервер на этом сокете */
+    int probe_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (probe_fd != -1) {
+        if (connect(probe_fd, (struct sockaddr *)&address, addr_len) == 0) {
+            fprintf(stderr, "Server is already running on %s\n", SOCKET_PATH);
+            close(probe_fd);
+            close(server_fd);
+            return 1;
+        }
+        close(probe_fd);
+    }
+
+    /* Файл мёртвый (или его нет) — удаляем и занимаем путь */
     unlink(SOCKET_PATH);
 
-    addr_len = (socklen_t)(strlen(address.sun_path) + sizeof(address.sun_family));
     if (bind(server_fd, (struct sockaddr *)&address, addr_len) == -1) {
         perror("bind");
         close(server_fd);
