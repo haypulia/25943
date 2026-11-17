@@ -42,16 +42,15 @@ static int send_all(int fd, const char *buffer, size_t len)
     return 0;
 }
 
-/* Подключение с несколькими попытками — спасает при одновременном запуске */
 static int connect_with_retry(int fd, struct sockaddr_un *addr, socklen_t len)
 {
-    int attempts = 50; /* ~1 секунда суммарно */
+    int attempts = 50;
     while (attempts-- > 0) {
         if (connect(fd, (struct sockaddr *)addr, len) == 0)
             return 0;
         if (errno != ENOENT && errno != ECONNREFUSED)
             return -1;
-        struct timespec ts = {0, 20000000L}; /* 20 мс */
+        struct timespec ts = {0, 20000000L};
         nanosleep(&ts, NULL);
     }
     return -1;
@@ -66,6 +65,9 @@ int main(void)
     char ch;
     size_t len = 0;
     socklen_t addr_len;
+
+    /* Вывод без буферизации — приглашение и эхо видны сразу */
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock_fd == -1) {
@@ -87,7 +89,6 @@ int main(void)
 
     printf("Connected to server.\n");
     printf("Enter text: ");
-    fflush(stdout);
 
     if (tcgetattr(STDIN_FILENO, &old_term) == -1) {
         perror("tcgetattr");

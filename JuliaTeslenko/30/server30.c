@@ -41,7 +41,6 @@ int main(void)
         close(probe_fd);
     }
 
-    /* Файл мёртвый (или его нет) — удаляем и занимаем путь */
     unlink(SOCKET_PATH);
 
     if (bind(server_fd, (struct sockaddr *)&address, addr_len) == -1) {
@@ -71,8 +70,7 @@ int main(void)
         return 1;
     }
 
-    printf("Client connected.\n");
-    printf("Uppercase text: ");
+    printf("Client connected. Uppercase text:\n");
     fflush(stdout);
 
     while ((bytes = read(client_fd, buffer, sizeof(buffer))) > 0) {
