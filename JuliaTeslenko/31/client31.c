@@ -1,35 +1,29 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
+#include <unistd.h>
 #include <errno.h>
 #include <signal.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
 #define SOCKET_PATH "/tmp/task31_socket"
 #define BUFFER_SIZE 1024
 
-static int write_all(int fd, const char *buffer, size_t size)
+int write_all(int fd, const char *buffer, size_t length)
 {
     size_t sent = 0;
 
-    while (sent < size)
+    while (sent < length)
     {
-        ssize_t n = write(fd, buffer + sent, size - sent);
+        ssize_t n = write(fd, buffer + sent, length - sent);
 
         if (n > 0)
             sent += (size_t)n;
         else if (n == -1 && errno == EINTR)
             continue;
         else
-        {
-            if (n == 0)
-                errno = EIO;
-
             return -1;
-        }
     }
 
     return 0;
@@ -39,12 +33,11 @@ int main(void)
 {
     int sock_fd;
     struct sockaddr_un address;
+    char buffer[BUFFER_SIZE];
 
     signal(SIGPIPE, SIG_IGN);
 
-    /* Создаём сокет */
     sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-
     if (sock_fd == -1)
     {
         perror("socket");
@@ -53,11 +46,9 @@ int main(void)
 
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
-    strcpy(address.sun_path, SOCKET_PATH);
+    strncpy(address.sun_path, SOCKET_PATH, sizeof(address.sun_path) - 1);
 
-    /* Подключаемся к серверу */
-    if (connect(sock_fd, (struct sockaddr *)&address,
-                sizeof(address)) == -1)
+    if (connect(sock_fd, (struct sockaddr *)&address, sizeof(address)) == -1)
     {
         perror("connect");
         close(sock_fd);
@@ -67,42 +58,32 @@ int main(void)
     printf("Connected to server 31.\n");
     printf("Enter text (Ctrl+D to disconnect):\n");
 
-    char buffer[BUFFER_SIZE];
-
-    /* Читаем текст и отправляем серверу */
     while (1)
     {
-        ssize_t bytes = read(STDIN_FILENO, buffer, sizeof(buffer));
+        ssize_t bytes_read = read(STDIN_FILENO, buffer, sizeof(buffer));
 
-        if (bytes > 0)
+        if (bytes_read > 0)
         {
-            if (write_all(sock_fd, buffer, (size_t)bytes) == -1)
+            if (write_all(sock_fd, buffer, (size_t)bytes_read) == -1)
             {
                 perror("write");
-                close(sock_fd);
-                return 1;
+                break;
             }
         }
-        else if (bytes == 0)
+        else if (bytes_read == 0)
         {
             break;
         }
-        else if (errno == EINTR)
-        {
-            continue;
-        }
-        else
+        else if (errno != EINTR)
         {
             perror("read");
-            close(sock_fd);
-            return 1;
+            break;
         }
     }
 
     shutdown(sock_fd, SHUT_WR);
     close(sock_fd);
 
-    printf("Disconnected from server 31.\n");
-
+    printf("\nDisconnected from server 31.\n");
     return 0;
 }

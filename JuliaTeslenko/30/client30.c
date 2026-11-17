@@ -153,6 +153,21 @@ int main(void)
         write(STDOUT_FILENO, &ch, 1);
     }
 
+    // Если ничего не ввели, используем демонстрационный текст
+    if (len == 0)
+    {
+        const char *demo_text =
+            "Hello Unix Domain Socket!\n"
+            "This is a demonstration of task 30.\n";
+
+        len = strlen(demo_text);
+        memcpy(buffer, demo_text, len);
+
+        printf("\nDemo mode:\n");
+        printf("%s", demo_text);
+    }
+
+
     // Восстанавливаем настройки терминала
     if (tcsetattr(STDIN_FILENO, TCSANOW, &old_term) == -1)
         perror("tcsetattr");
