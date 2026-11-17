@@ -114,7 +114,7 @@ static void sync_terminal_mode(void) {
             raw.c_cc[VTIME] = 0;
             if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0) {
                 raw_active = true;
-                const char *msg = "[client30 active: type text, Ctrl+D to exit]\n";
+                const char *msg = "[client30 active: type text, wait 4s for demo, Ctrl+D to exit]\n";
                 if (write(STDOUT_FILENO, msg, strlen(msg)) < 0) { }
             }
         }
@@ -154,7 +154,7 @@ static bool buf_append_single_byte(SingleByteBuffer *buf, unsigned char ch) {
 
 static void fill_demo_message(SingleByteBuffer *buf, int counter) {
     char raw_msg[128];
-    snprintf(raw_msg, sizeof(raw_msg), "[client30 demo=%ld] message #%d\n",
+    snprintf(raw_msg, sizeof(raw_msg), "[client30 demo pid=%ld] auto message #%d\n",
              (long)getpid(), counter);
     buf->len = 0;
     buf->data[0] = '\0';
