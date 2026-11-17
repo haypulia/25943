@@ -1,90 +1,127 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <string.h>
+#ifdef __sun
+#define __EXTENSIONS__
+#else
+#define _GNU_SOURCE
+#endif
+
 #include <ctype.h>
 #include <errno.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 #define SOCKET_PATH "/tmp/task30_socket"
+#define BUF_SIZE 1024
 
-int main(void)
-{
-    int server_fd, client_fd;
-    struct sockaddr_un address;
-    char buffer[1024];
-    ssize_t bytes;
-    socklen_t addr_len;
+static volatile sig_atomic_t running = 1;
 
-    server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_fd == -1) {
+static void handle_term_sig(int sig) {
+    (void)sig;
+    running = 0;
+}
+
+static void to_upper_and_print(char *buf, ssize_t len) {
+    for (ssize_t i = 0; i < len; i++) {
+        buf[i] = (char)toupper((unsigned char)buf[i]);
+    }
+    ssize_t written = 0;
+    while (written < len) {
+        ssize_t n = write(STDOUT_FILENO, buf + written, (size_t)(len - written));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            perror("write stdout");
+            break;
+        }
+        written += n;
+    }
+}
+
+int main(void) {
+    signal(SIGTTOU, SIG_IGN);
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_term_sig;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd == -1) {
         perror("socket");
-        return 1;
+        return EXIT_FAILURE;
     }
 
-    memset(&address, 0, sizeof(address));
-    address.sun_family = AF_UNIX;
-    strcpy(address.sun_path, SOCKET_PATH);
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    addr_len = (socklen_t)(strlen(address.sun_path) + sizeof(address.sun_family));
-
-    /* Проверяем, не работает ли уже сервер на этом сокете */
+    /* Защита от повторного запуска: если сокет живой — выходим */
     int probe_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (probe_fd != -1) {
-        if (connect(probe_fd, (struct sockaddr *)&address, addr_len) == 0) {
+        if (connect(probe_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
             fprintf(stderr, "Server is already running on %s\n", SOCKET_PATH);
             close(probe_fd);
-            close(server_fd);
-            return 1;
+            close(listen_fd);
+            return EXIT_FAILURE;
         }
         close(probe_fd);
     }
 
     unlink(SOCKET_PATH);
 
-    if (bind(server_fd, (struct sockaddr *)&address, addr_len) == -1) {
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("bind");
-        close(server_fd);
-        return 1;
+        close(listen_fd);
+        return EXIT_FAILURE;
     }
 
-    if (listen(server_fd, 5) == -1) {
+    if (listen(listen_fd, 1) == -1) {
         perror("listen");
-        close(server_fd);
+        close(listen_fd);
         unlink(SOCKET_PATH);
-        return 1;
+        return EXIT_FAILURE;
     }
 
     printf("Server is waiting for a client...\n");
     fflush(stdout);
 
-    do {
-        client_fd = accept(server_fd, NULL, NULL);
-    } while (client_fd == -1 && errno == EINTR);
-
-    if (client_fd == -1) {
+    int client_fd = -1;
+    while (running) {
+        client_fd = accept(listen_fd, NULL, NULL);
+        if (client_fd >= 0) break;
+        if (errno == EINTR) continue;
         perror("accept");
-        close(server_fd);
+        close(listen_fd);
         unlink(SOCKET_PATH);
-        return 1;
+        return EXIT_FAILURE;
     }
 
-    printf("Client connected. Uppercase text:\n");
-    fflush(stdout);
+    close(listen_fd);
 
-    while ((bytes = read(client_fd, buffer, sizeof(buffer))) > 0) {
-        for (ssize_t i = 0; i < bytes; i++)
-            buffer[i] = (char)toupper((unsigned char)buffer[i]);
-        write(STDOUT_FILENO, buffer, (size_t)bytes);
+    if (client_fd >= 0) {
+        char buf[BUF_SIZE];
+        while (running) {
+            ssize_t n = read(client_fd, buf, sizeof(buf));
+            if (n > 0) {
+                to_upper_and_print(buf, n);
+            } else if (n == 0) {
+                break;
+            } else {
+                if (errno == EINTR) continue;
+                perror("read");
+                break;
+            }
+        }
+        close(client_fd);
     }
 
-    printf("\nClient disconnected.\n");
-
-    close(client_fd);
-    close(server_fd);
     unlink(SOCKET_PATH);
-
-    printf("Server finished.\n");
-    return 0;
+    return EXIT_SUCCESS;
 }
