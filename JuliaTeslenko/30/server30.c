@@ -33,8 +33,8 @@ int main(void)
     unlink(SOCKET_PATH);
 
     // Привязываем сокет к адресу
-    if (bind(server_fd, (struct sockaddr *)&address,
-             sizeof(address)) == -1)
+    socklen_t addr_len = strlen(address.sun_path) + sizeof(address.sun_family);
+    if (bind(server_fd, (struct sockaddr *)&address, addr_len) == -1)
     {
         perror("bind");
         close(server_fd);

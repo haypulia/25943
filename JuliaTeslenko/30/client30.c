@@ -80,8 +80,8 @@ int main(void)
     strcpy(address.sun_path, SOCKET_PATH);
 
     // Подключаемся к серверу
-    if (connect(sock_fd, (struct sockaddr *)&address,
-                sizeof(address)) == -1)
+    socklen_t addr_len = strlen(address.sun_path) + sizeof(address.sun_family);
+    if (connect(sock_fd, (struct sockaddr *)&address, addr_len) == -1)
     {
         perror("connect");
         close(sock_fd);
