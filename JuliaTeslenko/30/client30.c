@@ -12,6 +12,7 @@
 
 #define SOCKET_PATH "/tmp/task30_socket"
 
+/* Неблокирующее чтение escape-последовательности (без задержек) */
 static void ignore_escape_sequence(void)
 {
     char ch;
@@ -41,15 +42,16 @@ static int send_all(int fd, const char *buffer, size_t len)
     return 0;
 }
 
+/* Подключение с несколькими попытками — спасает при одновременном запуске */
 static int connect_with_retry(int fd, struct sockaddr_un *addr, socklen_t len)
 {
-    int attempts = 50;
+    int attempts = 50; /* ~1 секунда суммарно */
     while (attempts-- > 0) {
         if (connect(fd, (struct sockaddr *)addr, len) == 0)
             return 0;
         if (errno != ENOENT && errno != ECONNREFUSED)
             return -1;
-        struct timespec ts = {0, 20000000L};
+        struct timespec ts = {0, 20000000L}; /* 20 мс */
         nanosleep(&ts, NULL);
     }
     return -1;
@@ -101,6 +103,9 @@ int main(void)
         return 1;
     }
 
+    /* Сбрасываем накопленный ввод, чтобы старые Enter не влияли */
+    tcflush(STDIN_FILENO, TCIFLUSH);
+
     while (len < sizeof(buffer) - 1) {
         if (read(STDIN_FILENO, &ch, 1) != 1)
             break;
@@ -124,7 +129,7 @@ int main(void)
             continue;
         }
 
-        if (ch == 4)
+        if (ch == 4) /* Ctrl+D */
             break;
 
         buffer[len++] = ch;
@@ -140,6 +145,8 @@ int main(void)
         printf("\nDemo mode:\n%s", demo_text);
     }
 
+    /* Сбрасываем хвост ввода и восстанавливаем терминал */
+    tcflush(STDIN_FILENO, TCIFLUSH);
     if (tcsetattr(STDIN_FILENO, TCSANOW, &old_term) == -1)
         perror("tcsetattr");
 
