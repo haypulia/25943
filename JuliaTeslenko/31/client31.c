@@ -11,7 +11,7 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define SOCKET_PATH "/tmp/task31.sock"
+#define SOCKET_PATH "/tmp/julia_task31.sock"
 #define INPUT_BUF_SIZE 1024
 
 typedef struct {
