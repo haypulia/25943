@@ -11,7 +11,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#define SOCKET_PATH "/tmp/julia_task31.sock"
+#define SOCKET_PATH "/home/julia/task31.sock"
 #define MAX_CLIENTS 64
 #define BUF_SIZE 1
 
