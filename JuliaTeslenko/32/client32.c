@@ -11,7 +11,7 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define SOCKET_PATH "/home/julia/task32.sock"
+#define SOCKET_PATH "/tmp/uds_32_y.teslenko1_upper.sock"
 #define INPUT_BUF_SIZE 1024
 
 typedef struct {

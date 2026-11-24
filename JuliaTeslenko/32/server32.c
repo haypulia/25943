@@ -20,7 +20,7 @@
 #define SIGPOLL SIGIO
 #endif
 
-#define SOCKET_PATH "/home/julia/task32.sock"
+#define SOCKET_PATH "/tmp/uds_32_y.teslenko1_upper.sock"
 #define MAX_CLIENTS 64
 #define BUF_SIZE 1024
 

@@ -14,4 +14,4 @@ client: client31.c
 	$(CC) $(CFLAGS) client31.c -o client31 $$LIBS
 
 clean:
-	rm -f server client /tmp/uds_31_upper.sock
+	rm -f server client /tmp/uds_31_y.teslenko1_upper.sock
