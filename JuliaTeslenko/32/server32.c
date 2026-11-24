@@ -1,295 +1,266 @@
-#ifdef __sun
-#define __EXTENSIONS__
-#else
-#define _GNU_SOURCE
-#endif
-
+#include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <ctype.h>
-#include <errno.h>
-#include <signal.h>
-#include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
-
-#define SOCKET_PATH "/tmp/julia_task32.sock"
-#define MAX_CLIENTS 10
-#define BUFFER_SIZE 1024
-
-static volatile sig_atomic_t stop_requested = 0;
-
-static void handle_sigio(int sig)
-{
-    (void)sig;
-}
-
-static void handle_sigint(int sig)
-{
-    (void)sig;
-    stop_requested = 1;
-}
-
-static int write_all(int fd, const char *buffer, size_t length)
-{
-    size_t sent = 0;
-
-    while (sent < length)
-    {
-        ssize_t n = write(fd, buffer + sent, length - sent);
-
-        if (n > 0)
-            sent += (size_t)n;
-        else if (n == -1 && errno == EINTR)
-            continue;
-        else
-            return -1;
-    }
-
-    return 0;
-}
-
-static int set_async(int fd)
-{
-    int flags = fcntl(fd, F_GETFL, 0);
-
-    if (flags == -1)
-        return -1;
-
-    if (fcntl(fd, F_SETOWN, getpid()) == -1)
-        return -1;
+#include <unistd.h>
 
 #ifdef __sun
-    flags |= FNDELAY | FASYNC;
-#else
-    flags |= O_NONBLOCK | O_ASYNC;
+#include <stropts.h>
+#include <ucred.h>
 #endif
 
-    if (fcntl(fd, F_SETFL, flags) == -1)
-        return -1;
+#ifndef SIGPOLL
+#define SIGPOLL SIGIO
+#endif
 
-    return 0;
+#define SOCKET_PATH "/home/julia/task32.sock"
+#define MAX_CLIENTS 64
+#define BUF_SIZE 1024
+
+static int client_fds[MAX_CLIENTS];
+static pid_t client_pids[MAX_CLIENTS];
+static volatile sig_atomic_t running = 1;
+static volatile sig_atomic_t got_sigpoll = 0;
+
+static void handle_term_sig(int sig) {
+    (void)sig;
+    running = 0;
 }
 
-static void close_client(int clients[], int index)
-{
-    if (clients[index] != -1)
-    {
-        close(clients[index]);
-        clients[index] = -1;
-        printf("\nClient disconnected.\n");
-        fflush(stdout);
+static void handle_sigpoll(int sig) {
+    (void)sig;
+    got_sigpoll = 1;
+}
+
+static pid_t get_client_pid(int fd) {
+#ifdef __sun
+    ucred_t *uc = NULL;
+    if (getpeerucred(fd, &uc) == 0 && uc != NULL) {
+        pid_t pid = ucred_getpid(uc);
+        ucred_free(uc);
+        return pid;
+    }
+    return -1;
+#else
+    struct ucred uc;
+    socklen_t len = sizeof(uc);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &uc, &len) == 0) {
+        return uc.pid;
+    }
+    return -1;
+#endif
+}
+
+static void to_upper_and_print(char *buf, ssize_t len) {
+    for (ssize_t i = 0; i < len; i++) {
+        buf[i] = (char)toupper((unsigned char)buf[i]);
+    }
+    ssize_t written = 0;
+    while (written < len) {
+        ssize_t n = write(STDOUT_FILENO, buf + written, (size_t)(len - written));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        written += n;
     }
 }
 
-static void accept_clients(int server_fd, int clients[])
-{
-    while (1)
-    {
-        int client_fd = accept(server_fd, NULL, NULL);
+static bool enable_async_io(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        return false;
+    }
 
-        if (client_fd == -1)
-        {
-            if (errno == EINTR)
+#ifdef __sun
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        return false;
+    }
+    if (ioctl(fd, I_SETSIG, S_INPUT | S_RDNORM | S_HANGUP) == -1) {
+        return false;
+    }
+#else
+    if (fcntl(fd, F_SETOWN, getpid()) == -1) {
+        return false;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK | O_ASYNC) == -1) {
+        return false;
+    }
+#endif
+    return true;
+}
+
+static void drain_client(int idx) {
+    char buf[BUF_SIZE];
+    int fd = client_fds[idx];
+    if (fd == -1) {
+        return;
+    }
+
+    while (1) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n > 0) {
+            to_upper_and_print(buf, n);
+        } else if (n == 0) {
+            close(fd);
+            client_fds[idx] = -1;
+            client_pids[idx] = -1;
+            break;
+        } else {
+            if (errno == EINTR) {
                 continue;
-
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
+            }
+            close(fd);
+            client_fds[idx] = -1;
+            client_pids[idx] = -1;
+            break;
+        }
+    }
+}
 
-            perror("accept");
+static void accept_new_clients(int listen_fd) {
+    while (1) {
+        int client_fd = accept(listen_fd, NULL, NULL);
+        if (client_fd < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
             break;
         }
 
-        if (set_async(client_fd) == -1)
-        {
-            perror("fcntl client");
-            close(client_fd);
-            continue;
-        }
-
-        int placed = 0;
-
-        for (int i = 0; i < MAX_CLIENTS; i++)
-        {
-            if (clients[i] == -1)
-            {
-                clients[i] = client_fd;
-                placed = 1;
-                printf("Client connected.\n");
-                fflush(stdout);
+        int idx = -1;
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (client_fds[i] == -1) {
+                idx = i;
                 break;
             }
         }
 
-        if (!placed)
-        {
-            printf("Maximum number of clients reached.\n");
+        if (idx == -1) {
             close(client_fd);
+            continue;
         }
+
+        if (!enable_async_io(client_fd)) {
+            close(client_fd);
+            continue;
+        }
+
+        client_fds[idx] = client_fd;
+        client_pids[idx] = get_client_pid(client_fd);
+        drain_client(idx);
     }
 }
 
-static void process_clients(int clients[])
-{
-    for (int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if (clients[i] == -1)
-            continue;
+int main(void) {
+    signal(SIGTTOU, SIG_IGN);
 
-        while (1)
-        {
-            char buffer[BUFFER_SIZE];
-            ssize_t bytes_read = read(clients[i], buffer, sizeof(buffer));
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        client_fds[i] = -1;
+        client_pids[i] = -1;
+    }
 
-            if (bytes_read > 0)
-            {
-                for (ssize_t j = 0; j < bytes_read; j++)
-                    buffer[j] = (char)toupper((unsigned char)buffer[j]);
+    sigset_t block_mask, old_mask;
+    sigemptyset(&block_mask);
+    sigaddset(&block_mask, SIGPOLL);
+    sigaddset(&block_mask, SIGINT);
+    sigaddset(&block_mask, SIGTERM);
+    if (sigprocmask(SIG_BLOCK, &block_mask, &old_mask) == -1) {
+        return EXIT_FAILURE;
+    }
 
-                if (write_all(STDOUT_FILENO, buffer, (size_t)bytes_read) == -1)
-                {
-                    perror("write");
-                    close_client(clients, i);
-                    break;
+    struct sigaction sa_term;
+    memset(&sa_term, 0, sizeof(sa_term));
+    sa_term.sa_handler = handle_term_sig;
+    sigaction(SIGINT, &sa_term, NULL);
+    sigaction(SIGTERM, &sa_term, NULL);
+
+    struct sigaction sa_poll;
+    memset(&sa_poll, 0, sizeof(sa_poll));
+    sa_poll.sa_handler = handle_sigpoll;
+    sigaction(SIGPOLL, &sa_poll, NULL);
+
+    int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd == -1) {
+        perror("socket");
+        return EXIT_FAILURE;
+    }
+
+    unlink(SOCKET_PATH);
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+        perror("bind");
+        close(listen_fd);
+        return EXIT_FAILURE;
+    }
+
+    if (!enable_async_io(listen_fd)) {
+        close(listen_fd);
+        unlink(SOCKET_PATH);
+        return EXIT_FAILURE;
+    }
+
+    if (listen(listen_fd, 16) == -1) {
+        perror("listen");
+        close(listen_fd);
+        unlink(SOCKET_PATH);
+        return EXIT_FAILURE;
+    }
+
+    accept_new_clients(listen_fd);
+
+    while (running) {
+        sigsuspend(&old_mask);
+
+        if (!running) {
+            break;
+        }
+        if (got_sigpoll) {
+            got_sigpoll = 0;
+            accept_new_clients(listen_fd);
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (client_fds[i] != -1) {
+                    drain_client(i);
                 }
             }
-            else if (bytes_read == 0)
-            {
-                close_client(clients, i);
-                break;
-            }
-            else if (errno == EINTR)
-            {
-                continue;
-            }
-            else if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                break;
-            }
-            else
-            {
-                perror("read");
-                close_client(clients, i);
-                break;
-            }
         }
     }
-}
 
-int main(void)
-{
-    int server_fd;
-    int clients[MAX_CLIENTS];
-    struct sockaddr_un address;
-    struct sigaction sa_io;
-    struct sigaction sa_int;
-    sigset_t block_set;
-    sigset_t old_set;
-    sigset_t wait_set;
-
-    for (int i = 0; i < MAX_CLIENTS; i++)
-        clients[i] = -1;
-
-    memset(&sa_io, 0, sizeof(sa_io));
-    sa_io.sa_handler = handle_sigio;
-    sigemptyset(&sa_io.sa_mask);
-
-    if (sigaction(SIGIO, &sa_io, NULL) == -1)
-    {
-        perror("sigaction SIGIO");
-        return 1;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client_fds[i] != -1) {
+            close(client_fds[i]);
+            client_fds[i] = -1;
+        }
     }
-
-    memset(&sa_int, 0, sizeof(sa_int));
-    sa_int.sa_handler = handle_sigint;
-    sigemptyset(&sa_int.sa_mask);
-
-    if (sigaction(SIGINT, &sa_int, NULL) == -1)
-    {
-        perror("sigaction SIGINT");
-        return 1;
-    }
-
-    signal(SIGPIPE, SIG_IGN);
-
-    sigemptyset(&block_set);
-    sigaddset(&block_set, SIGIO);
-    sigaddset(&block_set, SIGINT);
-
-    if (sigprocmask(SIG_BLOCK, &block_set, &old_set) == -1)
-    {
-        perror("sigprocmask");
-        return 1;
-    }
-
-    wait_set = old_set;
-    sigdelset(&wait_set, SIGIO);
-    sigdelset(&wait_set, SIGINT);
-
-    server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_fd == -1)
-    {
-        perror("socket");
-        sigprocmask(SIG_SETMASK, &old_set, NULL);
-        return 1;
-    }
-
-    memset(&address, 0, sizeof(address));
-    address.sun_family = AF_UNIX;
-    strncpy(address.sun_path, SOCKET_PATH, sizeof(address.sun_path) - 1);
-
+    close(listen_fd);
     unlink(SOCKET_PATH);
 
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) == -1)
-    {
-        perror("bind");
-        close(server_fd);
-        sigprocmask(SIG_SETMASK, &old_set, NULL);
-        return 1;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client_pids[i] > 0) {
+            kill(client_pids[i], SIGCONT);
+            client_pids[i] = -1;
+        }
     }
 
-    if (listen(server_fd, MAX_CLIENTS) == -1)
-    {
-        perror("listen");
-        close(server_fd);
-        unlink(SOCKET_PATH);
-        sigprocmask(SIG_SETMASK, &old_set, NULL);
-        return 1;
-    }
-
-    if (set_async(server_fd) == -1)
-    {
-        perror("fcntl server");
-        close(server_fd);
-        unlink(SOCKET_PATH);
-        sigprocmask(SIG_SETMASK, &old_set, NULL);
-        return 1;
-    }
-
-    printf("Server 32 is waiting for clients...\n");
-    fflush(stdout);
-
-    while (!stop_requested)
-    {
-        sigsuspend(&wait_set);
-
-        if (stop_requested)
-            break;
-
-        accept_clients(server_fd, clients);
-        process_clients(clients);
-    }
-
-    for (int i = 0; i < MAX_CLIENTS; i++)
-        close_client(clients, i);
-
-    close(server_fd);
-    unlink(SOCKET_PATH);
-
-    sigprocmask(SIG_SETMASK, &old_set, NULL);
-
-    printf("\nServer 32 finished.\n");
-    return 0;
+    return EXIT_SUCCESS;
 }
