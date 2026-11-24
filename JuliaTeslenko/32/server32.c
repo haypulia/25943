@@ -1,3 +1,9 @@
+#ifdef __sun
+#define __EXTENSIONS__
+#else
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,26 +15,24 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#define SOCKET_PATH "/tmp/task32_socket"
+#define SOCKET_PATH "/tmp/julia_task32.sock"
 #define MAX_CLIENTS 10
 #define BUFFER_SIZE 1024
 
-volatile sig_atomic_t sigio_received = 0;
-volatile sig_atomic_t stop_requested = 0;
+static volatile sig_atomic_t stop_requested = 0;
 
-void handle_sigio(int sig)
+static void handle_sigio(int sig)
 {
     (void)sig;
-    sigio_received = 1;
 }
 
-void handle_sigint(int sig)
+static void handle_sigint(int sig)
 {
     (void)sig;
     stop_requested = 1;
 }
 
-int write_all(int fd, const char *buffer, size_t length)
+static int write_all(int fd, const char *buffer, size_t length)
 {
     size_t sent = 0;
 
@@ -47,7 +51,7 @@ int write_all(int fd, const char *buffer, size_t length)
     return 0;
 }
 
-int set_async(int fd)
+static int set_async(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
 
@@ -69,7 +73,7 @@ int set_async(int fd)
     return 0;
 }
 
-void close_client(int clients[], int index)
+static void close_client(int clients[], int index)
 {
     if (clients[index] != -1)
     {
@@ -80,7 +84,7 @@ void close_client(int clients[], int index)
     }
 }
 
-void accept_clients(int server_fd, int clients[])
+static void accept_clients(int server_fd, int clients[])
 {
     while (1)
     {
@@ -127,60 +131,51 @@ void accept_clients(int server_fd, int clients[])
     }
 }
 
-void process_clients(int clients[])
+static void process_clients(int clients[])
 {
-    int data_was_read;
-
-    do
+    for (int i = 0; i < MAX_CLIENTS; i++)
     {
-        data_was_read = 0;
+        if (clients[i] == -1)
+            continue;
 
-        for (int i = 0; i < MAX_CLIENTS; i++)
+        while (1)
         {
-            if (clients[i] == -1)
-                continue;
+            char buffer[BUFFER_SIZE];
+            ssize_t bytes_read = read(clients[i], buffer, sizeof(buffer));
 
-            while (1)
+            if (bytes_read > 0)
             {
-                char buffer[BUFFER_SIZE];
-                ssize_t bytes_read = read(clients[i], buffer, sizeof(buffer));
+                for (ssize_t j = 0; j < bytes_read; j++)
+                    buffer[j] = (char)toupper((unsigned char)buffer[j]);
 
-                if (bytes_read > 0)
+                if (write_all(STDOUT_FILENO, buffer, (size_t)bytes_read) == -1)
                 {
-                    data_was_read = 1;
-
-                    for (ssize_t j = 0; j < bytes_read; j++)
-                        buffer[j] = (char)toupper((unsigned char)buffer[j]);
-
-                    if (write_all(STDOUT_FILENO, buffer, (size_t)bytes_read) == -1)
-                    {
-                        perror("write");
-                        close_client(clients, i);
-                        break;
-                    }
-                }
-                else if (bytes_read == 0)
-                {
-                    close_client(clients, i);
-                    break;
-                }
-                else if (errno == EINTR)
-                {
-                    continue;
-                }
-                else if (errno == EAGAIN || errno == EWOULDBLOCK)
-                {
-                    break;
-                }
-                else
-                {
-                    perror("read");
+                    perror("write");
                     close_client(clients, i);
                     break;
                 }
             }
+            else if (bytes_read == 0)
+            {
+                close_client(clients, i);
+                break;
+            }
+            else if (errno == EINTR)
+            {
+                continue;
+            }
+            else if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                break;
+            }
+            else
+            {
+                perror("read");
+                close_client(clients, i);
+                break;
+            }
         }
-    } while (data_was_read);
+    }
 }
 
 int main(void)
@@ -217,7 +212,8 @@ int main(void)
         return 1;
     }
 
-    /* Блокируем SIGIO и SIGINT до вызова sigsuspend. */
+    signal(SIGPIPE, SIG_IGN);
+
     sigemptyset(&block_set);
     sigaddset(&block_set, SIGIO);
     sigaddset(&block_set, SIGINT);
@@ -236,6 +232,7 @@ int main(void)
     if (server_fd == -1)
     {
         perror("socket");
+        sigprocmask(SIG_SETMASK, &old_set, NULL);
         return 1;
     }
 
@@ -249,6 +246,7 @@ int main(void)
     {
         perror("bind");
         close(server_fd);
+        sigprocmask(SIG_SETMASK, &old_set, NULL);
         return 1;
     }
 
@@ -257,6 +255,7 @@ int main(void)
         perror("listen");
         close(server_fd);
         unlink(SOCKET_PATH);
+        sigprocmask(SIG_SETMASK, &old_set, NULL);
         return 1;
     }
 
@@ -265,6 +264,7 @@ int main(void)
         perror("fcntl server");
         close(server_fd);
         unlink(SOCKET_PATH);
+        sigprocmask(SIG_SETMASK, &old_set, NULL);
         return 1;
     }
 
@@ -273,16 +273,10 @@ int main(void)
 
     while (!stop_requested)
     {
-        /*
-         * Временно разблокируем SIGIO и SIGINT,
-         * пока процесс ожидает сигнал.
-         */
         sigsuspend(&wait_set);
 
         if (stop_requested)
             break;
-
-        sigio_received = 0;
 
         accept_clients(server_fd, clients);
         process_clients(clients);
@@ -294,7 +288,6 @@ int main(void)
     close(server_fd);
     unlink(SOCKET_PATH);
 
-    /* Восстанавливаем исходную маску сигналов. */
     sigprocmask(SIG_SETMASK, &old_set, NULL);
 
     printf("\nServer 32 finished.\n");

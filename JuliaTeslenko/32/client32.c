@@ -1,3 +1,9 @@
+#ifdef __sun
+#define __EXTENSIONS__
+#else
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,27 +13,49 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#define SOCKET_PATH "/tmp/task32_socket"
+#define SOCKET_PATH "/tmp/julia_task32.sock"
 #define BUFFER_SIZE 1024
 
-int write_all(int fd, const char *buffer, size_t length)
+
+static size_t remove_escape_sequences(char *buffer)
 {
-    size_t sent = 0;
+    size_t read_pos = 0;
+    size_t write_pos = 0;
+    size_t length = strlen(buffer);
 
-    while (sent < length)
+    while (read_pos < length)
     {
-        ssize_t n = write(fd, buffer + sent, length - sent);
+        if ((unsigned char)buffer[read_pos] == 0x1B)
+        {
+            read_pos++;
 
-        if (n > 0)
-            sent += (size_t)n;
-        else if (n == -1 && errno == EINTR)
+            if (read_pos < length && buffer[read_pos] == '[')
+            {
+                read_pos++;
+
+                while (read_pos < length)
+                {
+                    unsigned char ch = (unsigned char)buffer[read_pos++];
+
+                    if (ch >= 0x40 && ch <= 0x7E)
+                        break;
+                }
+            }
+            else if (read_pos < length && buffer[read_pos] == 'O')
+            {
+                read_pos += 2;
+            }
+
             continue;
-        else
-            return -1;
+        }
+
+        buffer[write_pos++] = buffer[read_pos++];
     }
 
-    return 0;
+    buffer[write_pos] = '\0';
+    return write_pos;
 }
+
 
 int main(void)
 {
@@ -58,25 +86,11 @@ int main(void)
     printf("Connected to server 32.\n");
     printf("Enter text (Ctrl+D to disconnect):\n");
 
-    while (1)
+    while (fgets(buffer, sizeof(buffer), stdin) != NULL)
     {
-        ssize_t bytes_read = read(STDIN_FILENO, buffer, sizeof(buffer));
-
-        if (bytes_read > 0)
+        if (write_all(sock_fd, buffer, strlen(buffer)) == -1)
         {
-            if (write_all(sock_fd, buffer, (size_t)bytes_read) == -1)
-            {
-                perror("write");
-                break;
-            }
-        }
-        else if (bytes_read == 0)
-        {
-            break;
-        }
-        else if (errno != EINTR)
-        {
-            perror("read");
+            perror("write");
             break;
         }
     }
