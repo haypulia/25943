@@ -1,208 +1,143 @@
+#include <ctype.h>
+#include <errno.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <ctype.h>
-#include <errno.h>
-#include <signal.h>
-#include <poll.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
+#include <unistd.h>
 
-#define SOCKET_PATH "/tmp/task31_socket"
-#define MAX_CLIENTS 10
-#define BUFFER_SIZE 1024
+#define SOCKET_PATH "/tmp/task31.sock"
+#define MAX_CLIENTS 64
+#define BUF_SIZE 1
 
-volatile sig_atomic_t stop_requested = 0;
+static volatile sig_atomic_t running = 1;
 
-void handle_sigint(int sig)
-{
+static void handle_sigint(int sig) {
     (void)sig;
-    stop_requested = 1;
+    running = 0;
 }
 
-int write_all(int fd, const char *buffer, size_t length)
-{
-    size_t sent = 0;
-
-    while (sent < length)
-    {
-        ssize_t n = write(fd, buffer + sent, length - sent);
-
-        if (n > 0)
-            sent += (size_t)n;
-        else if (n == -1 && errno == EINTR)
-            continue;
-        else
-            return -1;
+static void to_upper_and_print(char *buf, ssize_t len) {
+    for (ssize_t i = 0; i < len; i++) {
+        buf[i] = (char)toupper((unsigned char)buf[i]);
     }
-
-    return 0;
-}
-
-void close_client(int clients[], int index)
-{
-    if (clients[index] != -1)
-    {
-        close(clients[index]);
-        clients[index] = -1;
-        printf("\nClient disconnected.\n");
-        fflush(stdout);
+    ssize_t written = 0;
+    while (written < len) {
+        ssize_t n = write(STDOUT_FILENO, buf + written, (size_t)(len - written));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        written += n;
     }
 }
 
-int main(void)
-{
-    int server_fd;
-    int clients[MAX_CLIENTS];
-    struct sockaddr_un address;
+int main(void) {
+    signal(SIGTTOU, SIG_IGN);
+
     struct sigaction sa;
-
-    for (int i = 0; i < MAX_CLIENTS; i++)
-        clients[i] = -1;
-
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_sigint;
-    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
-    if (sigaction(SIGINT, &sa, NULL) == -1)
-    {
-        perror("sigaction");
-        return 1;
-    }
-
-    server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_fd == -1)
-    {
+    int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd == -1) {
         perror("socket");
-        return 1;
+        return EXIT_FAILURE;
     }
-
-    memset(&address, 0, sizeof(address));
-    address.sun_family = AF_UNIX;
-    strncpy(address.sun_path, SOCKET_PATH, sizeof(address.sun_path) - 1);
 
     unlink(SOCKET_PATH);
 
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) == -1)
-    {
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("bind");
-        close(server_fd);
-        return 1;
+        close(listen_fd);
+        return EXIT_FAILURE;
     }
 
-    if (listen(server_fd, MAX_CLIENTS) == -1)
-    {
+    if (listen(listen_fd, 16) == -1) {
         perror("listen");
-        close(server_fd);
+        close(listen_fd);
         unlink(SOCKET_PATH);
-        return 1;
+        return EXIT_FAILURE;
     }
 
-    printf("Server 31 is waiting for clients...\n");
-    fflush(stdout);
+    struct pollfd fds[MAX_CLIENTS + 1];
+    fds[0].fd = listen_fd;
+    fds[0].events = POLLIN;
+    for (int i = 1; i <= MAX_CLIENTS; i++) {
+        fds[i].fd = -1;
+        fds[i].events = POLLIN;
+    }
 
-    while (!stop_requested)
-    {
-        struct pollfd fds[MAX_CLIENTS + 1];
+    char buf[BUF_SIZE];
 
-        fds[0].fd = server_fd;
-        fds[0].events = POLLIN;
-        fds[0].revents = 0;
-
-        for (int i = 0; i < MAX_CLIENTS; i++)
-        {
-            fds[i + 1].fd = clients[i];
-            fds[i + 1].events = POLLIN;
-            fds[i + 1].revents = 0;
-        }
-
-        int result = poll(fds, MAX_CLIENTS + 1, -1);
-
-        if (result == -1)
-        {
-            if (errno == EINTR)
+    while (running) {
+        int ready = poll(fds, MAX_CLIENTS + 1, -1);
+        if (ready < 0) {
+            if (errno == EINTR) {
                 continue;
-
+            }
             perror("poll");
             break;
         }
 
-        if (fds[0].revents & POLLIN)
-        {
-            int client_fd = accept(server_fd, NULL, NULL);
-
-            if (client_fd == -1)
-            {
-                if (errno != EINTR)
-                    perror("accept");
-            }
-            else
-            {
-                int placed = 0;
-
-                for (int i = 0; i < MAX_CLIENTS; i++)
-                {
-                    if (clients[i] == -1)
-                    {
-                        clients[i] = client_fd;
-                        placed = 1;
-                        printf("Client connected.\n");
-                        fflush(stdout);
+        if (fds[0].revents & POLLIN) {
+            int client_fd = accept(listen_fd, NULL, NULL);
+            if (client_fd >= 0) {
+                bool placed = false;
+                for (int i = 1; i <= MAX_CLIENTS; i++) {
+                    if (fds[i].fd == -1) {
+                        fds[i].fd = client_fd;
+                        fds[i].events = POLLIN;
+                        placed = true;
                         break;
                     }
                 }
-
-                if (!placed)
-                {
-                    printf("Maximum number of clients reached.\n");
+                if (!placed) {
                     close(client_fd);
                 }
+            } else if (errno != EINTR) {
+                perror("accept");
             }
         }
 
-        for (int i = 0; i < MAX_CLIENTS; i++)
-        {
-            if (clients[i] == -1)
+        for (int i = 1; i <= MAX_CLIENTS; i++) {
+            if (fds[i].fd == -1) {
                 continue;
-
-            short events = fds[i + 1].revents;
-
-            if (events & (POLLIN | POLLHUP | POLLERR | POLLNVAL))
-            {
-                char buffer[BUFFER_SIZE];
-                ssize_t bytes_read = read(clients[i], buffer, sizeof(buffer));
-
-                if (bytes_read > 0)
-                {
-                    for (ssize_t j = 0; j < bytes_read; j++)
-                        buffer[j] = (char)toupper((unsigned char)buffer[j]);
-
-                    if (write_all(STDOUT_FILENO, buffer, (size_t)bytes_read) == -1)
-                    {
-                        perror("write");
-                        close_client(clients, i);
+            }
+            if (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                ssize_t n = read(fds[i].fd, buf, sizeof(buf));
+                if (n > 0) {
+                    to_upper_and_print(buf, n);
+                } else {
+                    if (n < 0 && errno == EINTR) {
+                        continue;
                     }
-                }
-                else if (bytes_read == 0)
-                {
-                    close_client(clients, i);
-                }
-                else if (errno != EINTR)
-                {
-                    perror("read");
-                    close_client(clients, i);
+                    close(fds[i].fd);
+                    fds[i].fd = -1;
                 }
             }
         }
     }
 
-    for (int i = 0; i < MAX_CLIENTS; i++)
-        close_client(clients, i);
-
-    close(server_fd);
+    for (int i = 0; i <= MAX_CLIENTS; i++) {
+        if (fds[i].fd != -1) {
+            close(fds[i].fd);
+        }
+    }
     unlink(SOCKET_PATH);
-
-    printf("\nServer 31 finished.\n");
-    return 0;
+    return EXIT_SUCCESS;
 }

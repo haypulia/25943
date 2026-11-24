@@ -1,6 +1,17 @@
-all:
-	gcc -Wall -Wextra -Wpedantic -g server31.c -o server31
-	gcc -Wall -Wextra -Wpedantic -g client31.c -o client31
+CC = gcc
+CFLAGS = -Wall -Wextra -O2
+
+.PHONY: all clean
+
+all: server client
+
+server: server31.c
+	@LIBS=""; [ "`uname -s`" = "SunOS" ] && LIBS="-lsocket -lnsl"; \
+	$(CC) $(CFLAGS) server31.c -o server31 $$LIBS
+
+client: client31.c
+	@LIBS=""; [ "`uname -s`" = "SunOS" ] && LIBS="-lsocket -lnsl"; \
+	$(CC) $(CFLAGS) client31.c -o client31 $$LIBS
 
 clean:
-	rm -f server31 client31
+	rm -f server client /tmp/uds_31_upper.sock
